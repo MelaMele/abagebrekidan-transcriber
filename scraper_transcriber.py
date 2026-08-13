@@ -1,8 +1,8 @@
 import os
-import re
+import glob
 import requests
-from bs4 import BeautifulSoup
 import whisper
+import yt_dlp
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -15,7 +15,7 @@ def send_telegram_message(text):
     
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
-    # ቴሌግራም በአንድ መልእክት ከ4096 ፊደል በላይ ስለማይቀበል ረጅም ጽሁፍ ከሆነ ከፋፍሎ ለመላክ
+    # ረጅም ጽሁፍ ከሆነ ከፋፍሎ ለመላክ
     for i in range(0, len(text), 4000):
         chunk = text[i:i+4000]
         payload = {
@@ -25,71 +25,59 @@ def send_telegram_message(text):
         }
         requests.post(url, data=payload)
 
-def get_audio_links():
-    print("የቻናሉን ገፅ በመፈተሽ ላይ...")
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    }
-    response = requests.get(CHANNEL_URL, headers=headers)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    audio_links = []
-    
-    # 1. ሁሉንም የኦዲዮ ታጎች መፈለግ
-    for audio in soup.find_all('audio'):
-        src = audio.get('src')
-        if src:
-            audio_links.append(src)
-            
-    # 2. የቴሌግራም Voice Message ማጫወቻ ሊንኮችን መፈለግ
-    for a in soup.find_all('a', class_=['tgme_widget_message_voice_player', 'tgme_widget_message_document_wrap']):
-        href = a.get('href')
-        if href and ('http' in href):
-            audio_links.append(href)
-            
-    # 3. በRegex ሊንኮችን በገጹ ምንጭ (Source code) ውስጥ አጣርቶ መፈለግ
-    found_urls = re.findall(r'src="(https://[^"]+)"', response.text)
-    for url in found_urls:
-        if '.ogg' in url or '.mp3' in url or '.m4a' in url or 'voice' in url:
-            audio_links.append(url)
-            
-    return list(set(audio_links))
-
-def main():
+def download_channel_audios():
     os.makedirs("downloads", exist_ok=True)
     
-    audio_links = get_audio_links()
-    print(f"በገጹ ላይ {len(audio_links)} የድምፅ ፋይሎች ተገኝተዋል።")
+    # yt-dlp ማዘጋጃ
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'ignoreerrors': True,
+        'quiet': False,
+        'playlistend': 5, # የመጨረሻዎቹን 5 ኦዲዮዎች ብቻ ለመውሰድ
+    }
     
-    if not audio_links:
-        print("ምንም አዲስ የድምፅ ፋይል አልተገኘም።")
+    print("በ yt-dlp አማካኝነት ከአባ ገብረኪዳን ቻናል ኦዲዮዎችን በመፈለግ ላይ...")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([CHANNEL_URL])
+
+def main():
+    # 1. ኦዲዮዎችን ማውረድ
+    download_channel_audios()
+    
+    # በ downloads ፎልደር ውስጥ የወረዱ ፋይሎችን ማግኘት
+    audio_files = glob.glob("downloads/*")
+    print(f"\n[+] በጠቅላላ {len(audio_files)} የድምፅ ፋይሎች ወርደዋል።")
+    
+    if not audio_files:
+        print("ምንም የድምፅ ፋይል ማውረድ አልተቻለም።")
         return
 
-    print("Whisper AI (Small model) በመጫን ላይ...")
+    # 2. Whisper AI ሞዴል መጫን
+    print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
     
-    for idx, link in enumerate(audio_links, start=1):
-        audio_filename = f"downloads/audio_{idx}.mp3"
+    # 3. እያንዳንዱን ኦዲዮ ወደ ጽሁፍ መቀየር
+    for idx, audio_file in enumerate(audio_files, start=1):
+        print(f"\n[+] ኦዲዮ {idx} ({audio_file}) ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
         
-        print(f"\n[+] ኦዲዮ {idx} በማውረድ ላይ: {link}")
-        res = requests.get(link, stream=True)
-        with open(audio_filename, 'wb') as f:
-            for chunk in res.iter_content(chunk_size=1024*1024):
-                if chunk:
-                    f.write(chunk)
-                    
-        print(f"ኦዲዮ {idx} ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
-        result = model.transcribe(audio_filename, language="am")
-        extracted_text = result["text"]
-        
-        # የተቀየረውን ጽሁፍ በቴሌግራም ቦት መላክ
-        print(f"ጽሁፉን በቴሌግራም ቦት በመላክ ላይ...")
-        send_telegram_message(extracted_text)
-        
-        print(f"✅ ኦዲዮ {idx} በቦት ተልኳል!")
-        
-        if os.path.exists(audio_filename):
-            os.remove(audio_filename)
+        try:
+            result = model.transcribe(audio_file, language="am")
+            extracted_text = result["text"]
+            
+            if extracted_text.strip():
+                print(f"ጽሁፉን በቴሌግራም ቦት በመላክ ላይ...")
+                send_telegram_message(extracted_text)
+                print(f"✅ ኦዲዮ {idx} በቦት ተልኳል!")
+            else:
+                print(f"⚠️ በኦዲዮ {idx} ውስጥ ምንም ድምፅ አልተገኘም።")
+                
+        except Exception as e:
+            print(f"❌ ስህተት ተከሰተ፦ {e}")
+            
+        # የወረደውን ፋይል ማጽዳት
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
 
 if __name__ == "__main__":
     main()
