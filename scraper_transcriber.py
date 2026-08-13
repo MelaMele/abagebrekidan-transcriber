@@ -1,8 +1,7 @@
 import os
-import glob
+import re
 import requests
 import whisper
-import yt_dlp
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -15,7 +14,7 @@ def send_telegram_message(text):
     
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
-    # ረጅም ጽሁፍ ከሆነ ከፋፍሎ ለመላክ
+    # ቴሌግራም በአንድ መልእክት ከ4096 ፊደል በላይ ስለማይቀበል ረጅም ጽሁፍ ከሆነ ከፋፍሎ ለመላክ
     for i in range(0, len(text), 4000):
         chunk = text[i:i+4000]
         payload = {
@@ -25,44 +24,60 @@ def send_telegram_message(text):
         }
         requests.post(url, data=payload)
 
-def download_channel_audios():
-    os.makedirs("downloads", exist_ok=True)
-    
-    # yt-dlp ማዘጋጃ
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': 'downloads/%(id)s.%(ext)s',
-        'ignoreerrors': True,
-        'quiet': False,
-        'playlistend': 5, # የመጨረሻዎቹን 5 ኦዲዮዎች ብቻ ለመውሰድ
+def extract_audio_urls():
+    print("የቻናሉን ገፅ በመፈተሽ ላይ...")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    print("በ yt-dlp አማካኝነት ከአባ ገብረኪዳን ቻናል ኦዲዮዎችን በመፈለግ ላይ...")
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([CHANNEL_URL])
+    response = requests.get(CHANNEL_URL, headers=headers)
+    html_content = response.text
+    
+    # በቴሌግራም ገጽ ውስጥ ያሉትን ሁሉንም የድምፅ/ኦዲዮ ፋይል ሊንኮች በRegex መፈለግ
+    # ቴሌግራም ድምፆችን በ'https://cdn...' ወይም 'https://t.me/i/...' ሊንኮች ነው የሚያስቀምጣቸው
+    patterns = [
+        r'https://[^"]+\.(?:ogg|mp3|m4a)\?[^"]+',
+        r'https://t\.me/s/abagebrekidan/[0-9]+\?single',
+        r'src="(https://[^"]+)"'
+    ]
+    
+    audio_links = []
+    for pattern in patterns:
+        matches = re.findall(pattern, html_content)
+        for match in matches:
+            if '.ogg' in match or '.mp3' in match or '.m4a' in match or 'voice' in match:
+                audio_links.append(match)
+                
+    # ከተደጋገሙ ማጽዳት
+    unique_links = list(set(audio_links))
+    return unique_links
 
 def main():
-    # 1. ኦዲዮዎችን ማውረድ
-    download_channel_audios()
+    os.makedirs("downloads", exist_ok=True)
     
-    # በ downloads ፎልደር ውስጥ የወረዱ ፋይሎችን ማግኘት
-    audio_files = glob.glob("downloads/*")
-    print(f"\n[+] በጠቅላላ {len(audio_files)} የድምፅ ፋይሎች ወርደዋል።")
+    audio_links = extract_audio_urls()
+    print(f"\n[+] በጠቅላላ {len(audio_links)} የድምፅ ፋይሎች ተገኝተዋል።")
     
-    if not audio_files:
-        print("ምንም የድምፅ ፋይል ማውረድ አልተቻለም።")
+    if not audio_links:
+        print("⚠️ ምንም የድምፅ ፋይል ማግኘት አልተቻለም።")
         return
 
-    # 2. Whisper AI ሞዴል መጫን
     print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
     
-    # 3. እያንዳንዱን ኦዲዮ ወደ ጽሁፍ መቀየር
-    for idx, audio_file in enumerate(audio_files, start=1):
-        print(f"\n[+] ኦዲዮ {idx} ({audio_file}) ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
+    for idx, link in enumerate(audio_links, start=1):
+        audio_filename = f"downloads/audio_{idx}.ogg"
         
+        print(f"\n[+] ኦዲዮ {idx} በማውረድ ላይ: {link}")
         try:
-            result = model.transcribe(audio_file, language="am")
+            res = requests.get(link, stream=True)
+            with open(audio_filename, 'wb') as f:
+                for chunk in res.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+                        
+            print(f"ኦዲዮ {idx} ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
+            result = model.transcribe(audio_filename, language="am")
             extracted_text = result["text"]
             
             if extracted_text.strip():
@@ -75,9 +90,8 @@ def main():
         except Exception as e:
             print(f"❌ ስህተት ተከሰተ፦ {e}")
             
-        # የወረደውን ፋይል ማጽዳት
-        if os.path.exists(audio_file):
-            os.remove(audio_file)
+        if os.path.exists(audio_filename):
+            os.remove(audio_filename)
 
 if __name__ == "__main__":
     main()
