@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 import yt_dlp
@@ -6,7 +7,8 @@ import whisper
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-CHANNEL_URL = "https://t.me/s/abagebrekidan"
+CHANNEL_USERNAME = "abagebrekidan"
+CHANNEL_URL = f"https://t.me/s/{CHANNEL_USERNAME}"
 
 def send_telegram_message(text):
     if not BOT_TOKEN or not CHAT_ID:
@@ -23,31 +25,57 @@ def send_telegram_message(text):
             "text": f"📖 **የአባ ገብረኪዳን ትምህርት (በጽሁፍ)፦**\n\n{chunk}",
             "parse_mode": "Markdown"
         }
-        requests.post(url, data=payload)
+        try:
+            requests.post(url, data=payload)
+        except Exception as e:
+            print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
 def get_audio_post_urls():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
+    print(f"ገጹን ከ {CHANNEL_URL} በመጫን ላይ...")
     response = requests.get(CHANNEL_URL, headers=headers)
     soup = BeautifulSoup(response.text, 'html.parser')
     
     post_urls = []
-    # በቴሌግራም ገጽ ውስጥ ያሉትን መልእክቶች መፈተሽ
     messages = soup.find_all('div', class_='tgme_widget_message')
+    print(f"በገጹ ላይ በጠቅላላ {len(messages)} ፖስቶች ተገኝተዋል።")
     
     for msg in messages:
-        # በፖስቱ ውስጥ ኦዲዮ፣ ድምፅ ወይም ሰነድ ካለ መፈተሽ
-        audio_tag = msg.find('audio')
-        doc_tag = msg.find('a', class_='tgme_widget_message_document_wrap')
-        voice_tag = msg.find('a', class_='tgme_widget_message_voice_player')
+        # የፖስቱን ሊንክ ማውጣት
+        data_post = msg.get('data-post')
+        date_anchor = msg.find('a', class_='tgme_widget_message_date')
         
-        if audio_tag or doc_tag or voice_tag:
-            post_id = msg.get('data-post')
-            if post_id:
-                post_urls.append(f"https://t.me/{post_id}")
+        post_link = None
+        if data_post:
+            post_link = f"https://t.me/{data_post}"
+        elif date_anchor and date_anchor.get('href'):
+            post_link = date_anchor.get('href')
+            
+        if not post_link:
+            continue
+            
+        # በፖስቱ ውስጥ ኦዲዮ/ድምፅ መኖሩን በልዩ ልዩ መንገዶች መፈተሽ
+        has_audio_tag = msg.find('audio') is not None
+        has_voice = bool(msg.select('.tgme_widget_message_voice, .tgme_widget_message_voice_player, [class*="voice"]'))
+        has_doc = bool(msg.select('.tgme_widget_message_document, .tgme_widget_message_document_wrap, [class*="document"]'))
+        has_audio_ext = bool(re.search(r'\.(mp3|ogg|m4a|wav|aac|flac)\b', msg.text, re.IGNORECASE))
+        
+        if has_audio_tag or has_voice or has_doc or has_audio_ext:
+            print(f"  [+] የድምፅ ፖስት ተለይቷል፦ {post_link}")
+            post_urls.append(post_link)
+            
+    # የትኛውም የድምፅ ምልክት ባይገኝ እንኳ የመጨረሻዎቹን 5 ፖስቶች ቀጥታ ለመፈተሽ
+    if not post_urls and messages:
+        print("⚠️ የተለየ የድምፅ ምልክት ስላልተገኘ የመጨረሻዎቹን 5 ፖስቶች አውቶማቲክ እንፈትሻለን...")
+        for msg in messages[-5:]:
+            data_post = msg.get('data-post')
+            if data_post:
+                post_urls.append(f"https://t.me/{data_post}")
                 
-    return list(set(post_urls))
+    # ድግግሞሾችን ማስወገድ
+    return list(dict.fromkeys(post_urls))
 
 def download_audio(post_url, output_path):
     ydl_opts = {
@@ -61,13 +89,12 @@ def download_audio(post_url, output_path):
 
 def main():
     os.makedirs("downloads", exist_ok=True)
-    print("የቻናሉን ገፅ በመፈተሽ ላይ...")
     
     post_urls = get_audio_post_urls()
-    print(f"\n[+] በጠቅላላ {len(post_urls)} የድምፅ ፖስቶች ተገኝተዋል።")
+    print(f"\n[+] ለምርመራ የተዘጋጁ ፖስቶች ብዛት፦ {len(post_urls)}")
     
     if not post_urls:
-        print("⚠️ ምንም የድምፅ ፖስት አልተገኘም።")
+        print("⚠️ ምንም አይነት ፖስት ማግኘት አልተቻለም።")
         return
 
     print("\nWhisper AI (Small model) በመጫን ላይ...")
@@ -75,12 +102,12 @@ def main():
     
     for idx, post_url in enumerate(post_urls, start=1):
         audio_filename = f"downloads/audio_{idx}.mp3"
-        print(f"\n[+] ፖስት {idx} በማውረድ ላይ: {post_url}")
+        print(f"\n--------------------------------------------------")
+        print(f"[+] ፖስት {idx} በማውረድ ላይ፦ {post_url}")
         
         try:
             download_audio(post_url, audio_filename)
             
-            # ፋይሉ ከወረደ ወደ ጽሁፍ መቀየር
             if os.path.exists(audio_filename):
                 print("ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
                 result = model.transcribe(audio_filename, language="am")
@@ -98,7 +125,7 @@ def main():
                 print("⚠️ ፋይሉን ማውረድ አልተቻለም።")
                 
         except Exception as e:
-            print(f"❌ ስህተት ተከሰተ፦ {e}")
+            print(f"ℹ️ በዚህ ፖስት ላይ ኦዲዮ አልተገኘም ወይም ስህተት ተከሰተ (ይዘለላል)።")
 
 if __name__ == "__main__":
     main()
