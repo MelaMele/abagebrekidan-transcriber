@@ -1,7 +1,5 @@
 import os
-import re
 import requests
-from bs4 import BeautifulSoup
 import yt_dlp
 import whisper
 
@@ -28,44 +26,50 @@ def send_telegram_message(text):
         except Exception as e:
             print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
-def get_real_post_ids():
-    """ የቻናሉን ትክክለኛ የቅርብ ጊዜ ፖስት IDዎች ለማግኘት """
-    url = f"https://t.me/s/{CHANNEL_USERNAME}?before=999999"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
+def get_channel_posts_via_ytdlp():
+    """yt-dlp ን በመጠቀም ከቻናሉ የቪዲዮ/ኦዲዮ ፖስቶችን በቀጥታ መፈለግ"""
+    channel_url = f"https://t.me/s/{CHANNEL_USERNAME}"
+    print(f"[+] በ yt-dlp ከ {channel_url} መረጃዎችን በማውጣት ላይ...")
+    
+    ydl_opts = {
+        'extract_flat': 'in_playlist',
+        'quiet': True,
+        'skip_download': True,
+        'playlistend': 15,  # የመጨረሻዎቹን 15 ፖስቶች መውሰድ
     }
     
-    print(f"[+] ከ {url} የቅርብ ጊዜ ፖስቶችን በመፈለግ ላይ...")
+    post_urls = []
     try:
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        post_ids = []
-        
-        messages = soup.find_all('div', class_='tgme_widget_message')
-        for msg in messages:
-            data_post = msg.get('data-post')
-            if data_post and '/' in data_post:
-                try:
-                    pid = int(data_post.split('/')[-1])
-                    post_ids.append(pid)
-                except ValueError:
-                    pass
-                    
-        if not post_ids:
-            matches = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', res.text)
-            if matches:
-                post_ids = [int(m) for m in matches]
-                
-        if post_ids:
-            max_id = max(post_ids)
-            print(f"✅ ትክክለኛው የቅርብ ጊዜ ፖስት ID ተገኝቷል፦ {max_id}")
-            # የመጨረሻዎቹን 15 ፖስቶች መውሰድ
-            return list(range(max_id, max(1, max_id - 15), -1))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(channel_url, download=False)
+            if info and 'entries' in info:
+                for entry in info['entries']:
+                    url = entry.get('url') or entry.get('webpage_url')
+                    if url:
+                        post_urls.append(url)
     except Exception as e:
-        print(f"⚠️ ስህተት ተከሰተ፦ {e}")
+        print(f"⚠️ yt-dlp extraction error: {e}")
         
+    return post_urls
+
+def get_fallback_posts():
+    """yt-dlp ካልሰራ በቀጥታ የቴሌግራም ገጽን በመጠየቅ"""
+    url = f"https://t.me/s/{CHANNEL_USERNAME}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+    
+    import re
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        found = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', r.text)
+        if found:
+            post_ids = [int(x) for x in found]
+            max_id = max(post_ids)
+            return [f"https://t.me/{CHANNEL_USERNAME}/{i}" for i in range(max_id, max(1, max_id - 10), -1)]
+    except Exception as e:
+        print(f"Fallback error: {e}")
+            
     return []
 
 def download_audio(post_url, output_path):
@@ -81,24 +85,29 @@ def download_audio(post_url, output_path):
 def main():
     os.makedirs("downloads", exist_ok=True)
     
-    check_ids = get_real_post_ids()
-    if not check_ids:
-        print("⚠️ የሚፈተሹ ፖስቶች አልተገኙም።")
-        return
+    post_urls = get_channel_posts_via_ytdlp()
+    
+    if not post_urls:
+        print("⚠️ yt-dlp ፖስት ማግኘት አልቻለም፤ ሁለተኛ አማራጭ (Fallback) በመሞከር ላይ...")
+        post_urls = get_fallback_posts()
         
-    print(f"[+] የሚፈተሹ የፖስት IDዎች፦ {check_ids}")
+    if not post_urls:
+        print("⚠️ ምንም አይነት ፖስት ማግኘት አልተቻለም።")
+        return
+
+    print(f"✅ በጠቅላላ {len(post_urls)} የሚፈተሹ ፖስቶች ተገኝተዋል!")
+    print(f"ፖስቶች፦ {post_urls}")
 
     print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
     
     found_audio_count = 0
     
-    for post_id in check_ids:
-        post_url = f"https://t.me/{CHANNEL_USERNAME}/{post_id}"
-        audio_filename = f"downloads/audio_{post_id}.mp3"
+    for idx, post_url in enumerate(post_urls, start=1):
+        audio_filename = f"downloads/audio_{idx}.mp3"
         
         print(f"\n--------------------------------------------------")
-        print(f"[+] ፖስት ID {post_id} በመፈተሽ ላይ፦ {post_url}")
+        print(f"[+] ፖስት {idx} በመፈተሽ ላይ፦ {post_url}")
         
         try:
             download_audio(post_url, audio_filename)
@@ -111,8 +120,8 @@ def main():
                 
                 if extracted_text.strip():
                     print("ጽሁፉን በቴሌግራም ቦት በመላክ ላይ...")
-                    send_telegram_message(f"📍 **የፖስት ቁጥር፦** {post_id}\n🔗 {post_url}\n\n" + extracted_text)
-                    print(f"✅ ፖስት {post_id} በቦት ተልኳል!")
+                    send_telegram_message(f"📍 **የፖስት ሊንክ፦** {post_url}\n\n" + extracted_text)
+                    print(f"✅ ፖስት {idx} በቦት ተልኳል!")
                 else:
                     print("⚠️ በድምፁ ውስጥ ምንም ጽሁፍ አልተገኘም።")
                     
@@ -121,7 +130,7 @@ def main():
                 print("ℹ️ በዚህ ፖስት ላይ ኦዲዮ አልተገኘም።")
                 
         except Exception:
-            print(f"ℹ️ ፖስት {post_id} ኦዲዮ የለውም ወይም የጽሁፍ ፖስት ነው (ይዘለላል)።")
+            print(f"ℹ️ በዚህ ፖስት ላይ ኦዲዮ አልተገኘም ወይም የጽሁፍ ፖስት ነው (ይዘለላል)።")
 
     if found_audio_count == 0:
         print("\n⚠️ በተፈተሹት ፖስቶች ውስጥ ምንም ኦዲዮ አልተገኘም።")
