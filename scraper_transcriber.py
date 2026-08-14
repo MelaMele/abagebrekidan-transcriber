@@ -4,13 +4,14 @@ import requests
 from telethon import TelegramClient
 import whisper
 
+# GitHub Secrets ላይ ያስገቧቸውን መረጃዎች ማንበብ
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHANNEL_USERNAME = 'abagebrekidan'
 
-# ቦቱን በTelethon ማስነሳት (ያለ OTP / Login)
+# የTelethon Client ማዘጋጀት
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
 def send_telegram_message(text):
@@ -31,7 +32,8 @@ def send_telegram_message(text):
         requests.post(url, data=payload)
 
 async def main():
-    print("ከቴሌግራም ጋር በBot Token በመገናኘት ላይ (ያለ OTP)...")
+    print("ከቴሌግራም ጋር በBot Token በመገናኘት ላይ...")
+    # ቀጥታ በBot Token ማስነሳት (ምንም አይነት የቁጥር/OTP ጥያቄ አይጠይቅም)
     await client.start(bot_token=BOT_TOKEN)
     
     print("Whisper AI (Small model) በመጫን ላይ...")
@@ -67,6 +69,8 @@ async def main():
 
     if count == 0:
         print("በመጨረሻዎቹ መልእክቶች ውስጥ ምንም የድምፅ ፋይል አልተገኘም።")
+        
+    await client.disconnect()
 
-with client:
-    client.loop.run_until_complete(main())
+if __name__ == '__main__':
+    asyncio.run(main())
