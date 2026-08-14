@@ -1,5 +1,7 @@
 import os
+import re
 import requests
+from bs4 import BeautifulSoup
 import yt_dlp
 import whisper
 
@@ -26,16 +28,45 @@ def send_telegram_message(text):
         except Exception as e:
             print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
-def get_latest_post_id():
-    """የቻናሉን የቅርብ ጊዜ ፖስት ቁጥር ለማወቅ"""
-    url = f"https://t.me/s/{CHANNEL_USERNAME}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    res = requests.get(url, headers=headers)
-    import re
-    matches = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', res.text)
-    if matches:
-        return max(map(int, matches))
-    return 500  # ברירת מחדל / Default
+def get_real_post_ids():
+    """ የቻናሉን ትክክለኛ የቅርብ ጊዜ ፖስት IDዎች ለማግኘት """
+    url = f"https://t.me/s/{CHANNEL_USERNAME}?before=999999"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    
+    print(f"[+] ከ {url} የቅርብ ጊዜ ፖስቶችን በመፈለግ ላይ...")
+    try:
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        post_ids = []
+        
+        messages = soup.find_all('div', class_='tgme_widget_message')
+        for msg in messages:
+            data_post = msg.get('data-post')
+            if data_post and '/' in data_post:
+                try:
+                    pid = int(data_post.split('/')[-1])
+                    post_ids.append(pid)
+                except ValueError:
+                    pass
+                    
+        if not post_ids:
+            matches = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', res.text)
+            if matches:
+                post_ids = [int(m) for m in matches]
+                
+        if post_ids:
+            max_id = max(post_ids)
+            print(f"✅ ትክክለኛው የቅርብ ጊዜ ፖስት ID ተገኝቷል፦ {max_id}")
+            # የመጨረሻዎቹን 15 ፖስቶች መውሰድ
+            return list(range(max_id, max(1, max_id - 15), -1))
+    except Exception as e:
+        print(f"⚠️ ስህተት ተከሰተ፦ {e}")
+        
+    return []
 
 def download_audio(post_url, output_path):
     ydl_opts = {
@@ -50,12 +81,12 @@ def download_audio(post_url, output_path):
 def main():
     os.makedirs("downloads", exist_ok=True)
     
-    latest_id = get_latest_post_id()
-    print(f"[+] የቅርብ ጊዜ የፖስት ID፦ {latest_id}")
-    
-    # የመጨረሻዎቹን 10 ፖስቶች መፈተሽ (ከቅርብ ወደ ኋላ)
-    check_ids = list(range(latest_id, max(1, latest_id - 10), -1))
-    print(f"[+] የሚፈተሹ ፖስቶች ቁጥር፦ {check_ids}")
+    check_ids = get_real_post_ids()
+    if not check_ids:
+        print("⚠️ የሚፈተሹ ፖስቶች አልተገኙም።")
+        return
+        
+    print(f"[+] የሚፈተሹ የፖስት IDዎች፦ {check_ids}")
 
     print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
@@ -80,7 +111,7 @@ def main():
                 
                 if extracted_text.strip():
                     print("ጽሁፉን በቴሌግራም ቦት በመላክ ላይ...")
-                    send_telegram_message(f"📍 **ፖስት ሊንክ:** {post_url}\n\n" + extracted_text)
+                    send_telegram_message(f"📍 **የፖስት ቁጥር፦** {post_id}\n🔗 {post_url}\n\n" + extracted_text)
                     print(f"✅ ፖስት {post_id} በቦት ተልኳል!")
                 else:
                     print("⚠️ በድምፁ ውስጥ ምንም ጽሁፍ አልተገኘም።")
@@ -93,7 +124,7 @@ def main():
             print(f"ℹ️ ፖስት {post_id} ኦዲዮ የለውም ወይም የጽሁፍ ፖስት ነው (ይዘለላል)።")
 
     if found_audio_count == 0:
-        print("\n⚠️ በተፈተሹት 10 ፖስቶች ውስጥ ምንም ኦዲዮ አልተገኘም።")
+        print("\n⚠️ በተፈተሹት ፖስቶች ውስጥ ምንም ኦዲዮ አልተገኘም።")
 
 if __name__ == "__main__":
     main()
