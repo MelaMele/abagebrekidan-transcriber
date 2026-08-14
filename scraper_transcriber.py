@@ -1,20 +1,11 @@
 import os
-import re
 import requests
-import feedparser
-from bs4 import BeautifulSoup
 import yt_dlp
 import whisper
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CHANNEL_USERNAME = "abagebrekidan"
-
-# የቴሌግራም RSS Feed ሊንኮች
-RSS_FEEDS = [
-    f"https://rsshub.app/telegram/channel/{CHANNEL_USERNAME}",
-    f"https://tg.i-as.dev/rss/{CHANNEL_USERNAME}"
-]
 
 def send_telegram_message(text):
     if not BOT_TOKEN or not CHAT_ID:
@@ -35,35 +26,16 @@ def send_telegram_message(text):
         except Exception as e:
             print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
-def get_post_urls_from_rss():
-    post_urls = []
-    
-    for feed_url in RSS_FEEDS:
-        print(f"ከ RSS Feed መረጃዎችን በመጫን ላይ፦ {feed_url}")
-        try:
-            feed = feedparser.parse(feed_url)
-            if feed.entries:
-                print(f"  [+] {len(feed.entries)} ፖስቶች ተገኝተዋል!")
-                for entry in feed.entries:
-                    link = entry.get('link', '')
-                    if link:
-                        post_urls.append(link)
-                break
-        except Exception as e:
-            print(f"  ⚠️ ከዚህ Feed ማግኘት አልተቻለም፦ {e}")
-            
-    # RSS ካልሰራ በነጻ API በመጠቀም መሞከር
-    if not post_urls:
-        print("በነጻ Telegram API መረጃዎችን በመፈለግ ላይ...")
-        try:
-            api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            res = requests.get(api_url).json()
-            # fallback post URL
-            post_urls = [f"https://t.me/s/{CHANNEL_USERNAME}"]
-        except Exception as e:
-            print(f"API Error: {e}")
-
-    return list(dict.fromkeys(post_urls))
+def get_latest_post_id():
+    """የቻናሉን የቅርብ ጊዜ ፖስት ቁጥር ለማወቅ"""
+    url = f"https://t.me/s/{CHANNEL_USERNAME}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    res = requests.get(url, headers=headers)
+    import re
+    matches = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', res.text)
+    if matches:
+        return max(map(int, matches))
+    return 500  # ברירת מחדל / Default
 
 def download_audio(post_url, output_path):
     ydl_opts = {
@@ -78,42 +50,50 @@ def download_audio(post_url, output_path):
 def main():
     os.makedirs("downloads", exist_ok=True)
     
-    post_urls = get_post_urls_from_rss()
-    print(f"\n[+] በጠቅላላ የተገኙ ፖስቶች ብዛት፦ {len(post_urls)}")
+    latest_id = get_latest_post_id()
+    print(f"[+] የቅርብ ጊዜ የፖስት ID፦ {latest_id}")
     
-    if not post_urls:
-        print("⚠️ ምንም አይነት ፖስት ማግኘት አልተቻለም።")
-        return
+    # የመጨረሻዎቹን 10 ፖስቶች መፈተሽ (ከቅርብ ወደ ኋላ)
+    check_ids = list(range(latest_id, max(1, latest_id - 10), -1))
+    print(f"[+] የሚፈተሹ ፖስቶች ቁጥር፦ {check_ids}")
 
     print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
     
-    for idx, post_url in enumerate(post_urls, start=1):
-        audio_filename = f"downloads/audio_{idx}.mp3"
+    found_audio_count = 0
+    
+    for post_id in check_ids:
+        post_url = f"https://t.me/{CHANNEL_USERNAME}/{post_id}"
+        audio_filename = f"downloads/audio_{post_id}.mp3"
+        
         print(f"\n--------------------------------------------------")
-        print(f"[+] ፖስት {idx} በማውረድ ላይ፦ {post_url}")
+        print(f"[+] ፖስት ID {post_id} በመፈተሽ ላይ፦ {post_url}")
         
         try:
             download_audio(post_url, audio_filename)
             
             if os.path.exists(audio_filename):
-                print("ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
+                found_audio_count += 1
+                print("✅ የድምፅ ፋይል ተገኝቷል! ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
                 result = model.transcribe(audio_filename, language="am")
                 extracted_text = result["text"]
                 
                 if extracted_text.strip():
                     print("ጽሁፉን በቴሌግራም ቦት በመላክ ላይ...")
-                    send_telegram_message(extracted_text)
-                    print(f"✅ ፖስት {idx} በቦት ተልኳል!")
+                    send_telegram_message(f"📍 **ፖስት ሊንክ:** {post_url}\n\n" + extracted_text)
+                    print(f"✅ ፖስት {post_id} በቦት ተልኳል!")
                 else:
                     print("⚠️ በድምፁ ውስጥ ምንም ጽሁፍ አልተገኘም።")
                     
                 os.remove(audio_filename)
             else:
-                print("⚠️ ፋይሉን ማውረድ አልተቻለም።")
+                print("ℹ️ በዚህ ፖስት ላይ ኦዲዮ አልተገኘም።")
                 
-        except Exception as e:
-            print(f"ℹ️ በዚህ ፖስት ላይ ኦዲዮ አልተገኘም ወይም ሊወርድ አልቻለም (ይዘለላል)።")
+        except Exception:
+            print(f"ℹ️ ፖስት {post_id} ኦዲዮ የለውም ወይም የጽሁፍ ፖስት ነው (ይዘለላል)።")
+
+    if found_audio_count == 0:
+        print("\n⚠️ በተፈተሹት 10 ፖስቶች ውስጥ ምንም ኦዲዮ አልተገኘም።")
 
 if __name__ == "__main__":
     main()
