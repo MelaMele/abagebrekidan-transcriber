@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import requests
 import yt_dlp
 import whisper
@@ -28,43 +29,52 @@ def send_telegram_message(text):
             print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
 def get_latest_post_ids():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    })
-
-    urls_to_try = [
-        f"https://t.me/s/{CHANNEL_USERNAME}",
-        f"https://tgstat.com/channel/@{CHANNEL_USERNAME}",
-    ]
-
     found_ids = set()
+    
+    # መንገድ 1፦ Linux curl ን መጠቀም (የቴሌግራምን እግድ ለማለፍ)
+    print(f"[+] 'curl' በመጠቀም ከ https://t.me/s/{CHANNEL_USERNAME} የፖስት ቁጥሮችን በመፈለግ ላይ...")
+    try:
+        cmd = [
+            'curl', '-sL',
+            '-H', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            '-H', 'Accept-Language: en-US,en;q=0.9',
+            f'https://t.me/s/{CHANNEL_USERNAME}'
+        ]
+        html = subprocess.check_output(cmd, timeout=20).decode('utf-8', errors='ignore')
+        matches = re.findall(rf'{CHANNEL_USERNAME}/(\d+)', html)
+        for m in matches:
+            found_ids.add(int(m))
+        if found_ids:
+            print(f"  ✅ ከቴሌግራም ገፅ {len(found_ids)} የፖስት ቁጥሮች ተገኝተዋል!")
+    except Exception as e:
+        print(f"  ⚠️ Curl Error: {e}")
 
-    for url in urls_to_try:
-        print(f"[+] ከ {url} የፖስት ቁጥሮችን በመፈለግ ላይ...")
+    # መንገድ 2፦ DuckDuckGo Search (ተጨማሪ አማራጭ)
+    if not found_ids:
+        print("[+] በ DuckDuckGo በመፈለግ ላይ...")
         try:
-            resp = session.get(url, timeout=15)
-            if resp.status_code == 200:
-                # በገፁ ውስጥ የፖስት ID ቁጥሮችን በ Regex መፈለግ
-                matches = re.findall(rf'{CHANNEL_USERNAME}/(\d+)', resp.text)
-                for m in matches:
-                    found_ids.add(int(m))
-                if found_ids:
-                    print(f"  ✅ {len(found_ids)} የፖስት ቁጥሮች ተገኝተዋል!")
-                    break
+            cmd_ddg = [
+                'curl', '-sL',
+                '-H', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                f'https://html.duckduckgo.com/html/?q=site:t.me/{CHANNEL_USERNAME}/'
+            ]
+            html_ddg = subprocess.check_output(cmd_ddg, timeout=20).decode('utf-8', errors='ignore')
+            matches_ddg = re.findall(rf'{CHANNEL_USERNAME}/(\d+)', html_ddg)
+            for m in matches_ddg:
+                found_ids.add(int(m))
+            if found_ids:
+                print(f"  ✅ ከ DuckDuckGo {len(found_ids)} የፖስት ቁጥሮች ተገኝተዋል!")
         except Exception as e:
-            print(f"  ⚠️ ስህተት፦ {e}")
+            print(f"  ⚠️ DDG Error: {e}")
 
     if not found_ids:
-        print("⚠️ ምንም የፖስት ቁጥር አልተገኘም።")
+        print("⚠️ ምንም የፖስት ቁጥር ማግኘት አልተቻለም።")
         return []
 
     max_id = max(found_ids)
     print(f"✅ የቅርብ ጊዜ የፖስት ቁጥር (Max Post ID)፦ {max_id}")
     
-    # የመጨረሻዎቹን 15 ፖስቶች ሊንክ ማዘጋጀት
+    # የመጨረሻዎቹን 15 ፖስቶች መውሰድ
     check_ids = list(range(max_id, max(1, max_id - 15), -1))
     return [f"https://t.me/{CHANNEL_USERNAME}/{pid}" for pid in check_ids]
 
