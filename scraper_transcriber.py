@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import yt_dlp
 import whisper
@@ -26,51 +27,46 @@ def send_telegram_message(text):
         except Exception as e:
             print(f"መልእክት በመላክ ላይ ስህተት ተከሰተ፦ {e}")
 
-def get_channel_posts_via_ytdlp():
-    """yt-dlp ን በመጠቀም ከቻናሉ የቪዲዮ/ኦዲዮ ፖስቶችን በቀጥታ መፈለግ"""
-    channel_url = f"https://t.me/s/{CHANNEL_USERNAME}"
-    print(f"[+] በ yt-dlp ከ {channel_url} መረጃዎችን በማውጣት ላይ...")
-    
-    ydl_opts = {
-        'extract_flat': 'in_playlist',
-        'quiet': True,
-        'skip_download': True,
-        'playlistend': 15,  # የመጨረሻዎቹን 15 ፖስቶች መውሰድ
-    }
-    
-    post_urls = []
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(channel_url, download=False)
-            if info and 'entries' in info:
-                for entry in info['entries']:
-                    url = entry.get('url') or entry.get('webpage_url')
-                    if url:
-                        post_urls.append(url)
-    except Exception as e:
-        print(f"⚠️ yt-dlp extraction error: {e}")
-        
-    return post_urls
+def get_latest_post_ids():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    })
 
-def get_fallback_posts():
-    """yt-dlp ካልሰራ በቀጥታ የቴሌግራም ገጽን በመጠየቅ"""
-    url = f"https://t.me/s/{CHANNEL_USERNAME}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
+    urls_to_try = [
+        f"https://t.me/s/{CHANNEL_USERNAME}",
+        f"https://tgstat.com/channel/@{CHANNEL_USERNAME}",
+    ]
+
+    found_ids = set()
+
+    for url in urls_to_try:
+        print(f"[+] ከ {url} የፖስት ቁጥሮችን በመፈለግ ላይ...")
+        try:
+            resp = session.get(url, timeout=15)
+            if resp.status_code == 200:
+                # በገፁ ውስጥ የፖስት ID ቁጥሮችን በ Regex መፈለግ
+                matches = re.findall(rf'{CHANNEL_USERNAME}/(\d+)', resp.text)
+                for m in matches:
+                    found_ids.add(int(m))
+                if found_ids:
+                    print(f"  ✅ {len(found_ids)} የፖስት ቁጥሮች ተገኝተዋል!")
+                    break
+        except Exception as e:
+            print(f"  ⚠️ ስህተት፦ {e}")
+
+    if not found_ids:
+        print("⚠️ ምንም የፖስት ቁጥር አልተገኘም።")
+        return []
+
+    max_id = max(found_ids)
+    print(f"✅ የቅርብ ጊዜ የፖስት ቁጥር (Max Post ID)፦ {max_id}")
     
-    import re
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        found = re.findall(r'data-post="' + CHANNEL_USERNAME + r'/(\d+)"', r.text)
-        if found:
-            post_ids = [int(x) for x in found]
-            max_id = max(post_ids)
-            return [f"https://t.me/{CHANNEL_USERNAME}/{i}" for i in range(max_id, max(1, max_id - 10), -1)]
-    except Exception as e:
-        print(f"Fallback error: {e}")
-            
-    return []
+    # የመጨረሻዎቹን 15 ፖስቶች ሊንክ ማዘጋጀት
+    check_ids = list(range(max_id, max(1, max_id - 15), -1))
+    return [f"https://t.me/{CHANNEL_USERNAME}/{pid}" for pid in check_ids]
 
 def download_audio(post_url, output_path):
     ydl_opts = {
@@ -85,18 +81,13 @@ def download_audio(post_url, output_path):
 def main():
     os.makedirs("downloads", exist_ok=True)
     
-    post_urls = get_channel_posts_via_ytdlp()
+    post_urls = get_latest_post_ids()
     
     if not post_urls:
-        print("⚠️ yt-dlp ፖስት ማግኘት አልቻለም፤ ሁለተኛ አማራጭ (Fallback) በመሞከር ላይ...")
-        post_urls = get_fallback_posts()
-        
-    if not post_urls:
-        print("⚠️ ምንም አይነት ፖስት ማግኘት አልተቻለም።")
+        print("⚠️ የሚፈተሹ ፖስቶች አልተገኙም።")
         return
 
-    print(f"✅ በጠቅላላ {len(post_urls)} የሚፈተሹ ፖስቶች ተገኝተዋል!")
-    print(f"ፖስቶች፦ {post_urls}")
+    print(f"\n[+] በጠቅላላ {len(post_urls)} ፖስቶች ይፈተሻሉ።")
 
     print("\nWhisper AI (Small model) በመጫን ላይ...")
     model = whisper.load_model("small")
