@@ -1,4 +1,4 @@
-name: Auto Audio Transcriber to Telegram
+name: Abba Gebrekidan Audio Transcriber to Telegram
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     - cron: '0 */2 * * *'
 
 jobs:
-  transcribe:
+  transcribe-job:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,7 +18,7 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install FFmpeg
+    - name: Install System Dependencies (FFmpeg)
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
