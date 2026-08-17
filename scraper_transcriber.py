@@ -1,11 +1,12 @@
 import os
 import asyncio
 import requests
+from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 import whisper
 
-# 1. Environment Variables ማፅዳት (አላስፈላጊ ክፍተቶችንና ጥቅሶችን ያስወግዳል)
+# Environment Variables ማፅዳት
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 0))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "").strip().strip('"').strip("'")
 STRING_SESSION = os.environ.get("TELEGRAM_STRING_SESSION", "").strip().strip('"').strip("'")
@@ -24,7 +25,7 @@ def send_telegram_message(text):
         chunk = text[i:i+4000]
         payload = {
             "chat_id": CHAT_ID,
-            "text": f"📖 **የአባ ገብረኪዳን ትምህርት (በጽሁፍ)፦**\n\n{chunk}",
+            "text": chunk,
             "parse_mode": "Markdown"
         }
         try:
@@ -40,15 +41,21 @@ async def main():
 
     async with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
         print(f"✅ ከ @{CHANNEL_USERNAME} የቅርብ ጊዜ ፖስቶችን በመፈለግ ላይ...")
-        messages = await client.get_messages(CHANNEL_USERNAME, limit=15)
+        messages = await client.get_messages(CHANNEL_USERNAME, limit=10)
 
-        audio_messages = [
-            msg for msg in messages 
-            if msg.voice or msg.audio or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith('audio/'))
-        ]
+        # እንዳይደጋግም፦ ባለፉት 7 ሰዓታት ውስጥ የተፖሰቱትን ብቻ መምረጥ
+        now = datetime.now(timezone.utc)
+        time_threshold = now - timedelta(hours=7)
 
-        print(f"✅ በጠቅላላ {len(audio_messages)} የድምፅ ፖስቶች ተገኝተዋል!")
+        audio_messages = []
+        for msg in messages:
+            is_audio = msg.voice or msg.audio or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith('audio/'))
+            if is_audio and msg.date > time_threshold:
+                audio_messages.append(msg)
+
+        print(f"✅ ባለፉት 7 ሰዓታት ውስጥ የተፖሰቱ {len(audio_messages)} አዲስ የድምፅ ፖስቶች ተገኝተዋል!")
         if not audio_messages:
+            print("ℹ️ ምንም አዲስ የድምፅ ፖስት አልተገኘም።")
             return
 
         print("\nWhisper AI (Small model) በመጫን ላይ...")
@@ -62,12 +69,21 @@ async def main():
 
             if os.path.exists(file_path):
                 print("ወደ አማርኛ ጽሁፍ እየተቀየረ ነው...")
-                result = model.transcribe(file_path, language="am")
+                
+                # አማርኛ ፊደላትን ለማስገደድና Hallucination ለመከላከል የተደረገ ማስተካከያ
+                result = model.transcribe(
+                    file_path, 
+                    language="am",
+                    initial_prompt="ይህ በአማርኛ ቋንቋ የተሰጠ ኦርቶዶክሳዊ የትምህርት አውዲዮ ነው።",
+                    temperature=0.0,
+                    condition_on_previous_text=False
+                )
                 extracted_text = result.get("text", "")
 
                 if extracted_text.strip():
                     post_url = f"https://t.me/{CHANNEL_USERNAME}/{msg.id}"
-                    send_telegram_message(f"📍 **የፖስት ቁጥር፦** {msg.id}\n🔗 {post_url}\n\n" + extracted_text)
+                    full_message = f"📖 **የአባ ገብረኪዳን ትምህርት (በጽሁፍ)፦**\n\n📍 **የፖስት ቁጥር፦** {msg.id}\n🔗 {post_url}\n\n{extracted_text}"
+                    send_telegram_message(full_message)
                     print(f"✅ ፖስት {msg.id} በቦት ተልኳል!")
 
                 os.remove(file_path)
