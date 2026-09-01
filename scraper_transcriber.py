@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-import whisper
+from faster_whisper import WhisperModel
 
 # Environment Variables
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 0))
@@ -16,20 +16,22 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip().strip('"').strip("'")
 CHANNEL_USERNAME = "abagebrekidan"
 
 def clean_hallucinations(text):
-    """የማይፈለጉ የእብሪት/የመደጋገም ፊደላትንና ምልክቶችን ያፀዳል"""
-    # ተደጋጋሚ ኮማዎችንና ነጥቦችን ማስወገድ
-    text = re.sub(r'([,\.\?\s])\1{3,}', r'\1', text)
+    """የማይፈለጉ የእብሪት/የመደጋገም ፊደላትንና ነጥቦችን ያፀዳል"""
+    if not text:
+        return ""
     
-    # አማርኛ ያልሆኑ (Hebrew, Arabic, Chinese) ፊደላት ከበዙ ማፅዳት
-    # የአማርኛ Unicode range: \u1200-\u137F
+    # ተደጋጋሚ ነጥቦችን፣ ሰረዞችንና ኮማዎችን ማስወገድ
+    text = re.sub(r'[\.]{2,}', '። ', text)
+    text = re.sub(r'[\,]{2,}', '፣ ', text)
+    text = re.sub(r'([፣፤።\?\s])\1{2,}', r'\1', text)
+    
+    # አማርኛ ፊደላት፣ ቁጥሮች እና መሰረታዊ ስርዓተ-ነጥቦች ብቻ እንዲቀሩ
     cleaned_chars = []
     for char in text:
-        # አማርኛ፣ ቁጥሮች፣ የእንግሊዝኛ መሰረታዊ ምልክቶች ብቻ እንዲቀሩ
-        if re.match(r'[\u1200-\u137F0-9\s\.\,\:\!\?\-\"\']', char):
+        if re.match(r'[\u1200-\u137F0-9\s\.\,\:\!\?\-\"\'፣፤።፦\(\)]', char):
             cleaned_chars.append(char)
             
     cleaned_text = "".join(cleaned_chars)
-    # ተደጋጋሚ ባዶ ቦታዎችን ማስተካከል
     return re.sub(r'\s+', ' ', cleaned_text).strip()
 
 def send_telegram_message(text):
@@ -39,15 +41,18 @@ def send_telegram_message(text):
     
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
+    # ቴሌግራም ከ 4000 ፊደል በላይ አይቀበልም፤ በክፍል በክፍል መላክ
     for i in range(0, len(text), 4000):
         chunk = text[i:i+4000]
         payload = {
             "chat_id": CHAT_ID,
             "text": chunk,
-            "parse_mode": "Markdown"
+            "disable_web_page_preview": True
         }
         try:
-            requests.post(url, data=payload)
+            res = requests.post(url, data=payload)
+            if res.status_code != 200:
+                print(f"⚠️ መልዕክት መላክ አልተቻለም፦ {res.text}")
         except Exception as e:
             print(f"❌ ስህተት፦ {e}")
 
@@ -76,8 +81,9 @@ async def main():
             print("ℹ️ ምንም አዲስ የድምፅ ፖስት አልተገኘም።")
             return
 
-        print("\nWhisper AI (Small model) በመጫን ላይ...")
-        model = whisper.load_model("small")
+        print("\nWhisper AI (Faster-Whisper large-v3-turbo) በመጫን ላይ...")
+        # CPU ላይ በፍጥነት እንዲሰራ int8 ተጠቅመናል
+        model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cpu", compute_type="int8")
 
         for msg in reversed(audio_messages):
             file_path = f"downloads/audio_{msg.id}.mp3"
@@ -86,37 +92,37 @@ async def main():
             await client.download_media(msg, file=file_path)
 
             if os.path.exists(file_path):
-                print("ወደ አማርኛ ጽሁፍ እየተቀየረ ነው (Strict Decoding)...")
+                print(f"ወደ አማርኛ ጽሁፍ እየተቀየረ ነው (ID: {msg.id})...")
                 
-                # Hallucination ለመግታት የተደረጉ ጥብቅ መቆጣጠሪያዎች
-                options = {
-                    "language": "am",
-                    "task": "transcribe",
-                    "temperature": 0.0,
-                    "best_of": 5,
-                    "beam_size": 5,
-                    "patience": 1.0,
-                    "length_penalty": 1.0,
-                    "suppress_tokens": "-1",
-                    "condition_on_previous_text": False,
-                    "initial_prompt": "ይህ በአማርኛ ቋንቋ የተሰጠ የኦርቶዶክስ ተዋህዶ ትምህርት እና ስብከት ነው።"
-                }
+                try:
+                    # vad_filter=True ጸጥታዎችን ቆርጦ ስለሚጥል ነጥብ ነጥብ (... ...) የሚመጣውን ያጠፋል
+                    segments, _ = model.transcribe(
+                        file_path,
+                        language="am",
+                        task="transcribe",
+                        beam_size=5,
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500),
+                        initial_prompt="ይህ በአማርኛ ቋንቋ የተሰጠ የኢትዮጵያ ኦርቶዶክስ ተዋሕዶ ቤተክርስቲያን ስብከትና ትምህርት ነው።"
+                    )
 
-                result = model.transcribe(file_path, **options)
-                raw_text = result.get("text", "")
+                    transcribed_text = " ".join([seg.text for seg in segments])
+                    clean_text = clean_hallucinations(transcribed_text)
 
-                # የተረጎመውን ጽሁፍ ማፅዳት
-                clean_text = clean_hallucinations(raw_text)
+                    if clean_text and len(clean_text) > 15:
+                        post_url = f"https://t.me/{CHANNEL_USERNAME}/{msg.id}"
+                        full_message = f"📖 የአባ ገብረኪዳን ትምህርት (በጽሁፍ)፦\n\n📍 የፖስት ቁጥር፦ {msg.id}\n🔗 {post_url}\n\n{clean_text}"
+                        send_telegram_message(full_message)
+                        print(f"✅ ፖስት {msg.id} በተሳካ ሁኔታ በፅሁፍ ተልኳል!")
+                    else:
+                        print(f"⚠️ ፖስት {msg.id} ተገቢ የሆነ የአማርኛ ድምፅ ስላልተገኘበት ተዘልሏል።")
 
-                if clean_text and len(clean_text) > 10:
-                    post_url = f"https://t.me/{CHANNEL_USERNAME}/{msg.id}"
-                    full_message = f"📖 **የአባ ገብረኪዳን ትምህርት (በጽሁፍ)፦**\n\n📍 **የፖስት ቁጥር፦** {msg.id}\n🔗 {post_url}\n\n{clean_text}"
-                    send_telegram_message(full_message)
-                    print(f"✅ ፖስት {msg.id} በተሳካ ሁኔታ በፅሁፍ ተልኳል!")
-                else:
-                    print(f"⚠️ ፖስት {msg.id} ግልጽ የሆነ የአማርኛ ድምፅ ስላልተገኘበት ተዘልሏል።")
+                except Exception as e:
+                    print(f"❌ Transcribe ሲደረግ ስህተት ተፈጠረ፦ {e}")
 
-                os.remove(file_path)
+                # ፋይሉን ማጽዳት
+                if os.path.exists(file_path):
+                    os.remove(file_path)
 
 if __name__ == "__main__":
     asyncio.run(main())
